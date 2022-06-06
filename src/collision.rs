@@ -1,13 +1,86 @@
-use crate::*;
-use bevy::prelude::{Entity, Transform};
 use std::vec::IntoIter;
 
+use bevy::prelude::{Entity, Transform};
+
+use crate::*;
+
 #[derive(Debug)]
-pub struct Collisions {
+pub struct EdgeCollider {
+    pub(crate) bounds: Bounds,
+}
+
+impl EdgeCollider {
+    #[inline]
+    pub fn new(bounds: Bounds) -> Self {
+        Self { bounds }
+    }
+
+    #[inline]
+    pub fn range_x(&self, padding: f32) -> RangeInclusive<f32> {
+        (self.bounds.left() + padding)..=(self.bounds.right() - padding - padding)
+    }
+
+    #[inline]
+    pub fn range_y(&self, padding: f32) -> RangeInclusive<f32> {
+        (self.bounds.bottom() + padding)..=(self.bounds.top() - padding - padding)
+    }
+
+    #[inline]
+    pub fn check_left(&self, ball: &Ball, transform: &mut Transform, velocity: &mut Velocity) -> bool {
+        let min_x = self.bounds.left() + ball.radius;
+        if transform.translation.x > min_x {
+            return false;
+        }
+
+        transform.translation.x = min_x + (min_x - transform.translation.x);
+        velocity.0.x *= -1.0;
+        return true;
+    }
+
+    #[inline]
+    pub fn check_right(&self, ball: &Ball, transform: &mut Transform, velocity: &mut Velocity) -> bool {
+        let max_x = self.bounds.right() - ball.radius;
+        if transform.translation.x < max_x {
+            return false;
+        }
+
+        transform.translation.x = max_x - (transform.translation.x - max_x);
+        velocity.0.x *= -1.0;
+        return true;
+    }
+
+    #[inline]
+    pub fn check_top(&self, ball: &Ball, transform: &mut Transform, velocity: &mut Velocity) -> bool {
+        let max_y = self.bounds.top() - ball.radius;
+        if transform.translation.y < max_y {
+            return false;
+        }
+
+        transform.translation.y = max_y - (transform.translation.y - max_y);
+        velocity.0.y *= -1.0;
+        return true;
+    }
+
+    #[inline]
+    pub fn check_bottom(&self, ball: &Ball, transform: &mut Transform, velocity: &mut Velocity) -> bool {
+        let min_y = self.bounds.bottom() + ball.radius;
+        if transform.translation.y > min_y {
+            return false;
+        }
+
+        transform.translation.y = min_y + (min_y - transform.translation.y);
+        velocity.0.y *= -1.0;
+        return true;
+    }
+}
+
+#[derive(Debug)]
+pub struct BallCollisions {
     store: Vec<[Entity; 2]>,
 }
 
-impl Collisions {
+impl BallCollisions {
+    #[inline]
     pub fn new(capacity: Option<usize>) -> Self {
         Self {
             store: if let Some(c) = capacity {
@@ -42,73 +115,13 @@ impl Collisions {
     }
 }
 
-impl IntoIterator for Collisions {
+impl IntoIterator for BallCollisions {
     type Item = [Entity; 2];
     type IntoIter = IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.store.into_iter()
     }
-}
-
-#[inline]
-pub fn ball_edge_top_collision(
-    ball: &Ball,
-    transform: &mut Transform,
-    velocity: &mut Velocity,
-) -> bool {
-    if transform.translation.y <= ball.radius {
-        transform.translation.y = ball.radius + (ball.radius - transform.translation.y);
-        velocity.0.y *= -1.0;
-        return true;
-    }
-    return false;
-}
-
-#[inline]
-pub fn ball_edge_bottom_collision(
-    ball: &Ball,
-    transform: &mut Transform,
-    velocity: &mut Velocity,
-) -> bool {
-    let max_y = HEIGHT - ball.radius;
-    if transform.translation.y >= max_y {
-        transform.translation.y = max_y - (transform.translation.y - max_y);
-        velocity.0.y *= -1.0;
-        return true;
-    }
-    return false;
-}
-
-#[inline]
-pub fn ball_edge_left_collision(
-    ball: &Ball,
-    transform: &mut Transform,
-    velocity: &mut Velocity,
-) -> bool {
-    // transform.translation.x - ball.radius <= 0.0
-    if transform.translation.x <= ball.radius {
-        transform.translation.x = ball.radius + (ball.radius - transform.translation.x);
-        velocity.0.x *= -1.0;
-        return true;
-    }
-    return false;
-}
-
-#[inline]
-pub fn ball_edge_right_collision(
-    ball: &Ball,
-    transform: &mut Transform,
-    velocity: &mut Velocity,
-) -> bool {
-    let max_x = WIDTH - ball.radius;
-    // transform.translation.x + self.radius >= WIDTH
-    if transform.translation.x >= max_x {
-        transform.translation.x = max_x - (transform.translation.x - max_x);
-        velocity.0.x *= -1.0;
-        return true;
-    }
-    return false;
 }
 
 // Update velocity according to mass, after the balls bounce off of each other.

@@ -1,21 +1,19 @@
+use std::borrow::Borrow;
 use std::fmt;
 use std::fmt::Formatter;
 use std::ops::{Deref, DerefMut};
 
-use bevy::prelude::*;
-use bevy::utils::HashMap;
+use bevy::ecs::entity::Entity;
+pub use bevy::math::Vec2;
 
 pub use bounds::*;
-pub use iter::*;
 pub use location::*;
-pub use point::*;
 
 mod bounds;
-mod iter;
+pub mod iter;
 mod location;
-mod point;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ErrorKind {
     OutOfBounds(Bounds, Location),
 }
@@ -36,176 +34,272 @@ impl fmt::Display for ErrorKind {
     }
 }
 
-pub struct QuadTree {
-    bounds: Bounds,
-    capacity: usize,
-    max_depth: Option<u8>,
-    body: Box<Body>,
+#[derive(Clone, Copy, PartialEq)]
+pub struct Options {
+    /// Target capacity of a leaf before it is split in nodes. Note that a leaf
+    /// may contain more items when `max_depth` is reached.
+    pub capacity: usize,
+
+    pub max_depth: Option<u8>,
+    pub min_size: Option<Vec2>,
 }
 
-enum Body {
-    Empty,
-    Leaf(HashMap<Entity, Location>),
-    // [(Location, Entity); CAP]
-    Node([QuadTree; 4]),
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            capacity: 4,
+            max_depth: None,
+            min_size: None,
+        }
+    }
 }
 
 #[allow(dead_code)]
+pub enum Region {
+    NorthWest,
+    NorthEast,
+    SouthEast,
+    SouthWest,
+}
+
+impl Region {
+    #[inline(always)]
+    pub fn index(&self) -> usize {
+        use Region::*;
+        return match self {
+            NorthWest => 0,
+            NorthEast => 1,
+            SouthEast => 2,
+            SouthWest => 3,
+        };
+    }
+}
+
+impl Into<usize> for Region {
+    #[inline(always)]
+    fn into(self) -> usize { self.index() }
+}
+
+pub(crate) enum Body {
+    Empty,
+    Leaf(Vec<(Location, Entity)>),
+    Node([QuadTree; 4]), // 4 regions
+}
+
+pub struct QuadTree {
+    pub(crate) bounds: Bounds,
+    pub(crate) body: Box<Body>,
+    options: Options,
+    depth: u8,
+}
+
 impl QuadTree {
     #[inline]
-    pub fn new(bounds: Bounds, capacity: usize, max_depth: Option<u8>) -> Self {
+    pub fn new(bounds: Bounds, options: Options) -> Self {
         Self {
             bounds,
-            capacity,
-            max_depth,
+            options,
             body: Box::new(Body::Empty),
+            depth: 0,
         }
     }
 
-    pub fn capacity(&self) -> usize { self.capacity }
+    #[inline]
+    fn new_region(bounds: Bounds, options: Options, depth: u8) -> Self {
+        Self {
+            bounds,
+            options,
+            body: Box::new(Body::Empty),
+            depth: depth + 1,
+        }
+    }
 
+    /// Bounds, or area, in which the `QuadTree` operates.
+    #[inline(always)]
+    pub fn bounds(&self) -> Bounds { self.bounds }
+
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub fn options(&self) -> Options { self.options }
+
+    /// Indicates if the `QuadTree` contains any inserted elements.
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        return match self.body.deref() {
+            Body::Empty => true,
+            _ => false
+        };
+    }
+
+    /// Indicates if the `QuadTree` is a leaf (lowest possible body type).
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub fn is_leaf(&self) -> bool {
+        return match self.body.deref() {
+            Body::Leaf(_) => true,
+            _ => false
+        };
+    }
+
+    /// Indicates if `location` is inside, or intersects with the `QuadTree`'s
+    /// `bounds`.
+    #[inline]
     pub fn contains(&self, location: Location) -> bool {
         match location {
-            Location::Point(xy) => self.bounds.contains(xy),
+            Location::Point(point) => self.bounds.contains(point),
             Location::Area(bounds) => self.bounds.intersects(bounds),
         }
     }
 
-    pub fn insert(&mut self, location: Location, data: Entity) -> Result<usize, ErrorKind> {
+    /// Insert `entity` at `location`.
+    pub fn insert(&mut self, location: Location, value: Entity) -> Result<(), ErrorKind> {
         if !self.contains(location) {
             return Err(ErrorKind::OutOfBounds(self.bounds, location));
         }
+
         match self.body.deref_mut() {
             // quadtree is empty, make it a leaf
             Body::Empty => {
-                let mut map = HashMap::with_capacity(self.capacity);
-                map.insert(data, location);
-                self.body = Box::new(Body::Leaf(map));
-                return Ok(1);
+                let mut elems = Vec::with_capacity(self.options.capacity);
+                elems.push((location, value));
+                self.body = Box::new(Body::Leaf(elems));
             }
 
             // quadtree is a leaf, make it a node
-            Body::Leaf(map) => {
-                // insert when capacity is not reached, or when Some(max_depth) == 0
-                if map.len() < self.capacity || self.max_depth.unwrap_or(1) == 0 {
-                    map.insert(data, location);
-                    return Ok(map.len());
+            Body::Leaf(elems) => {
+                elems.push((location, value));
+                if elems.len() <= self.options.capacity
+                    || self.depth >= self.options.max_depth.unwrap_or(255) {
+                    // return when map is not over capacity or when max depth is reached
+                    return Ok(());
                 }
-
-                let max_depth: Option<u8> = if let Some(n) = self.max_depth { Some(n - 1) } else { None };
-
-                let center = self.bounds.center();
-                let mut regions = [
-                    // north east
-                    QuadTree::new(
-                        Bounds::from_corners(self.bounds.top_left(), center),
-                        self.capacity,
-                        max_depth,
-                    ),
-                    // north west
-                    QuadTree::new(
-                        Bounds::from_corners(
-                            Point::new(center.x, self.bounds.top()),
-                            Point::new(self.bounds.right(), center.y),
-                        ),
-                        self.capacity,
-                        max_depth,
-                    ),
-                    // south east
-                    QuadTree::new(
-                        Bounds::from_corners(
-                            Point::new(self.bounds.left(), center.y),
-                            Point::new(center.x, self.bounds.bottom()),
-                        ),
-                        self.capacity,
-                        max_depth,
-                    ),
-                    // south west
-                    QuadTree::new(
-                        Bounds::from_corners(center, self.bounds.bottom_right()),
-                        self.capacity,
-                        max_depth,
-                    ),
-                ];
-
-                for region in &mut regions {
-                    for data in map.iter() {
-                        let _ = region.insert(*data.1, data.0.clone());
+                if let Some(min_size) = self.options.min_size {
+                    if self.bounds.width() <= (min_size.x * 2.0) || self.bounds.height() <= (min_size.y * 2.0) {
+                        return Ok(());
                     }
                 }
 
+                let center = self.bounds.center();
+                let mut regions = [
+                    // Region::NorthWest
+                    Self::new_region(
+                        Bounds::from_corners(self.bounds.top_left(), center),
+                        self.options,
+                        self.depth + 1,
+                    ),
+                    // Region::NorthEast
+                    Self::new_region(
+                        Bounds::from_corners(center, self.bounds.top_right()),
+                        self.options,
+                        self.depth + 1,
+                    ),
+                    // Region::SouthEast
+                    Self::new_region(
+                        Bounds::from_corners(center, self.bounds.bottom_right()),
+                        self.options,
+                        self.depth + 1,
+                    ),
+                    // Region::SouthWest
+                    Self::new_region(
+                        Bounds::from_corners(self.bounds.bottom_left(), center),
+                        self.options,
+                        self.depth + 1,
+                    ),
+                ];
+
+                for (loc, val) in elems.iter() {
+                    let _ = regions[0].insert(*loc, *val);
+                    let _ = regions[1].insert(*loc, *val);
+                    let _ = regions[2].insert(*loc, *val);
+                    let _ = regions[3].insert(*loc, *val);
+                }
+
                 self.body = Box::new(Body::Node(regions));
-                return Ok(0);
             }
 
-            // quadtree is a node, try to insert in any of the partitions
-            Body::Node(nodes) => {
-                let _ = nodes[0].insert(location, data);
-                let _ = nodes[1].insert(location, data);
-                let _ = nodes[2].insert(location, data);
-                let _ = nodes[3].insert(location, data);
-                return Ok(0);
+            // quadtree is already a node, try to insert in any of its the regions
+            Body::Node(regions) => {
+                let _ = regions[0].insert(location, value);
+                let _ = regions[1].insert(location, value);
+                let _ = regions[2].insert(location, value);
+                let _ = regions[3].insert(location, value);
             }
-        }
+        };
+        return Ok(());
     }
 
-    pub fn query(&self, location: Location) -> Vec<(Location, Entity)> {
-        Vec::new()
+    /// Count and return the amount of inserted items among all leafs.
+    #[allow(dead_code)]
+    #[inline]
+    pub fn count(&self) -> usize {
+        return match self.body.deref() {
+            Body::Empty => { 0 }
+            Body::Leaf(map) => { map.len() }
+            Body::Node(regions) => {
+                let mut size = 0;
+                for region in regions {
+                    size += region.count();
+                }
+                size
+            }
+        };
     }
 
-    pub fn query_entities(&self, location: Location) -> Vec<Entity> {
-        let mut res = Vec::<Entity>::new();
-        for (_, e) in self.query(location).drain(..) {
-            res.push(e)
-        }
-        return res;
+    #[inline]
+    pub fn elements(&self) -> Option<Vec<(Location, Entity)>> {
+        return match self.body.deref() {
+            Body::Empty => { None }
+            Body::Leaf(elems) => { Some(elems.clone()) }
+            Body::Node(_) => {
+                // todo get + merge elems from underlying regions
+                None
+            }
+        };
     }
+
+    #[allow(dead_code)]
+    #[inline]
+    pub fn region(&self, region: Region) -> Option<&QuadTree> {
+        return match self.body.deref() {
+            Body::Node(regions) => {
+                Some(&regions[region.index()])
+            }
+            _ => None
+        };
+    }
+
+    #[inline]
+    pub fn regions(&self) -> Vec<&QuadTree> {
+        let mut vec = Vec::new();
+        get_regions(&mut vec, self);
+        return vec;
+    }
+
+    // pub fn iter(&self) -> CombinationIterator {
+    //     let mut vec = Vec::<Combination>::new();
+    //     fill_combination_iterator(&mut vec, self);
+    //     RegionsIterator { iter: vec.into_iter() }
+    // }
+
+    // pub fn for_each(&self) {
+    //
+    // }
+    //
+    // pub fn par_for_each(&self) {
+    //
+    // }
 }
 
-impl IntoIterator for QuadTree {
-    type Item = (Bounds, HashMap<Entity, Location>);
-    type IntoIter = std::vec::IntoIter<Self::Item>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        let mut iter = Vec::<Self::Item>::new();
-        fill_iter(&mut iter, self.bounds, self.body.deref());
-
-        iter.into_iter()
-    }
-}
-
-fn fill_iter(iter: &mut Vec<(Bounds, HashMap<Entity, Location>)>, bounds: Bounds, body: &Body) {
-    match body {
-        // quadtree is empty
+fn get_regions<'a>(dest: &mut Vec<&'a QuadTree>, tree: &'a QuadTree) {
+    match tree.body.deref() {
         Body::Empty => {}
-
-        // quadtree is a leaf
-        Body::Leaf(map) => {
-            iter.push((bounds, map.clone()));
+        Body::Leaf(_) => { dest.push(tree); }
+        Body::Node(regions) => {
+            get_regions(dest, regions[0].borrow());
+            get_regions(dest, regions[1].borrow());
+            get_regions(dest, regions[2].borrow());
+            get_regions(dest, regions[3].borrow());
         }
-
-        // quadtree is a node
-        Body::Node(nodes) => {
-            fill_iter(iter, nodes[0].bounds, nodes[0].body.deref());
-            fill_iter(iter, nodes[1].bounds, nodes[1].body.deref());
-            fill_iter(iter, nodes[2].bounds, nodes[2].body.deref());
-            fill_iter(iter, nodes[3].bounds, nodes[3].body.deref());
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::ops::Deref;
-
-    use super::*;
-
-    #[test]
-    fn qaudtree_subdivide() {
-        let mut qt = QuadTree::new(
-            Bounds::from_corners(Point::new(0.0, 0.0), Point::new(100.0, 100.0)),
-            4,
-            None,
-        );
-    }
+    };
 }

@@ -1,95 +1,92 @@
 use std::fmt;
-
-use bevy::render::primitives::Aabb;
+use std::fmt::Formatter;
 
 use crate::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Bounds {
-    center: Point,
-    half_extents: Point,
+    pub(crate) center: Vec2,
+    half_extents: Vec2,
 }
 
 #[allow(dead_code)]
 impl Bounds {
-    #[inline]
-    pub fn new(top_left: Point, width: f32, height: f32) -> Self {
-        let half_extents = Point::new(width * 0.5, height * 0.5);
-        Self::from_center(top_left + half_extents, half_extents)
-    }
-
     #[inline(always)]
-    pub fn from_center(center: Point, half_extents: Point) -> Self {
+    pub fn new(center: Vec2, width: f32, height: f32) -> Self {
         Self {
-            center: Point::from(center),
-            half_extents: Point::from(half_extents),
+            center,
+            half_extents: Vec2::new(width * 0.5, height * 0.5),
         }
     }
 
     #[inline]
-    pub fn from_corners(top_left: Point, bottom_right: Point) -> Self {
-        Self::new(
-            top_left,
-            bottom_right.x - top_left.x,
-            bottom_right.y - top_left.y,
-        )
+    pub fn from_corners(min: Vec2, max: Vec2) -> Self {
+        assert!(min.x < max.x);
+        let mut center = Vec2::ZERO;
+        let mut half_extents = Vec2::new((max.x - min.x) * 0.5, 0.0);
+
+        if min.y > max.y {
+            // min = top left
+            half_extents.y = (min.y - max.y) * 0.5;
+            center.y = min.y - half_extents.y;
+        } else {
+            // min = bottom left
+            half_extents.y = (max.y - min.y) * 0.5;
+            center.y = min.y + half_extents.y;
+        }
+
+        center.x = min.x + half_extents.x;
+        Self { center, half_extents }
     }
 
     #[inline(always)]
-    pub fn width(&self) -> f32 {
-        self.half_extents.x * 2.0
-    }
+    pub fn width(&self) -> f32 { self.half_extents.x * 2.0 }
 
     #[inline(always)]
-    pub fn height(&self) -> f32 {
-        self.half_extents.y * 2.0
-    }
+    pub fn height(&self) -> f32 { self.half_extents.y * 2.0 }
 
     #[inline(always)]
-    pub fn top(&self) -> f32 {
-        self.center.y - self.half_extents.y
-    }
+    pub fn top(&self) -> f32 { self.center.y + self.half_extents.y }
 
     #[inline(always)]
-    pub fn bottom(&self) -> f32 {
-        self.center.y + self.half_extents.y
-    }
+    pub fn bottom(&self) -> f32 { self.center.y - self.half_extents.y }
 
     #[inline(always)]
-    pub fn left(&self) -> f32 {
-        self.center.x - self.half_extents.x
-    }
+    pub fn left(&self) -> f32 { self.center.x - self.half_extents.x }
 
     #[inline(always)]
-    pub fn right(&self) -> f32 {
-        self.center.x + self.half_extents.x
+    pub fn right(&self) -> f32 { self.center.x + self.half_extents.x }
+
+    #[inline(always)]
+    pub fn center(&self) -> Vec2 { self.center }
+
+    #[inline(always)]
+    pub fn min(&self) -> Vec2 { self.bottom_left() }
+
+    #[inline(always)]
+    pub fn max(&self) -> Vec2 { self.top_right() }
+
+    #[inline]
+    pub fn top_left(&self) -> Vec2 {
+        Vec2::new(self.left(), self.top())
     }
 
     #[inline]
-    pub fn center(&self) -> Point {
-        self.center
+    pub fn top_right(&self) -> Vec2 {
+        Vec2::new(self.right(), self.top())
     }
 
     #[inline]
-    pub fn top_left(&self) -> Point {
-        Point::new(self.left(), self.top())
+    pub fn bottom_left(&self) -> Vec2 {
+        Vec2::new(self.left(), self.bottom())
     }
 
     #[inline]
-    pub fn top_right(&self) -> Point {
-        Point::new(self.right(), self.top())
+    pub fn bottom_right(&self) -> Vec2 {
+        Vec2::new(self.right(), self.bottom())
     }
 
     #[inline]
-    pub fn bottom_left(&self) -> Point {
-        Point::new(self.left(), self.bottom())
-    }
-
-    #[inline]
-    pub fn bottom_right(&self) -> Point {
-        Point::new(self.right(), self.bottom())
-    }
-
     pub fn intersects(&self, area: Bounds) -> bool {
         self.contains(area.top_left())
             || self.contains(area.top_right())
@@ -98,38 +95,51 @@ impl Bounds {
     }
 
     #[inline]
-    pub fn contains(&self, point: Point) -> bool {
+    pub fn contains(&self, point: Vec2) -> bool {
         point.x >= self.left()
             && point.x <= self.right()
-            && point.y >= self.top()
-            && point.y <= self.bottom()
+            && point.y <= self.top()
+            && point.y >= self.bottom()
     }
 }
 
-impl DebugDrawLines for Bounds {
-    fn debug_draw_lines(self, draw: &mut DebugLines, color: Option<Color>) {
-        let color = color.unwrap_or(Color::GREEN);
-        draw.line_colored(self.top_left().into(), self.top_right().into(), 0.0, color);
-        draw.line_colored(self.top_right().into(), self.bottom_right().into(), 0.0, color);
-        draw.line_colored(self.bottom_right().into(), self.bottom_left().into(), 0.0, color);
-        draw.line_colored(self.bottom_left().into(), self.top_left().into(), 0.0, color);
-    }
-}
-
-impl From<Aabb> for Bounds {
-    #[inline]
-    fn from(v: Aabb) -> Self {
-        Self::from_center(Point::from(v.center), Point::from(v.half_extents))
-    }
-}
+// impl From<Aabb> for Bounds {
+//     #[inline]
+//     fn from(v: Aabb) -> Self {
+//         Self {
+//             center: v.center.truncate(),
+//             half_extents: v.half_extents.truncate(),
+//         }
+//     }
+// }
 
 impl fmt::Debug for Bounds {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Bounds")
             .field("center", &self.center)
             .field("top_left", &self.top_left())
             .field("width", &self.width())
             .field("height", &self.height())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounds_from_corners() {
+        let bounds = Bounds::new(Vec2::new(5.0, 5.0), 10.0, 10.0);
+        assert_eq!(Bounds::from_corners(Vec2::new(0.0, 0.0), Vec2::new(10.0, 10.0)), bounds);
+        assert_eq!(Bounds::from_corners(Vec2::new(0.0, 10.0), Vec2::new(10.0, 0.0)), bounds);
+    }
+
+    #[test]
+    fn bounds_contains_point() {
+        let bounds = Bounds::new(Vec2::ZERO, 4.0, 4.0);
+        assert!(bounds.contains(Vec2::new(2.0, 2.0)));
+        assert!(bounds.contains(Vec2::new(-2.0, -2.0)));
+        assert!(!bounds.contains(Vec2::new(10.0, 10.0)))
     }
 }
